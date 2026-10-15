@@ -1,0 +1,13 @@
+{
+  "name": "new-okx-events-bot-2",
+  "version": "2.0.0",
+  "description": "Lightweight OKX BTC+ETH 5-min event contracts bot: Bollinger Bands(10) band touch -> orderbook -> buy the ~10c side -> sell @ 30c. Fixed 0.1 contracts, funding->trading float. HuggingFace Docker Space ready (port 7860).",
+  "main": "src/index.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
