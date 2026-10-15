@@ -20,6 +20,11 @@ const BB_LEN = 10;
 const BB_MULT = 2;
 const SELL_PX = 0.30;
 const MIN_ENTRY = 0.90;
+// Safety guards (a thin/empty book can show junk prices like UP=1.00 DOWN=1.00)
+const MAX_BUY_PX = num2(process.env.MAX_BUY_PRICE, 0.15);   // only ever buy the cheap side
+const MAX_BOOK_SUM = 1.05;                                   // UP+DOWN of a real book is ~1.00
+const MIN_SECS_LEFT = num2(process.env.MIN_SECS_LEFT, 60);   // no entries in the last N seconds
+function num2(v, d) { const n = parseFloat(v); return Number.isFinite(n) ? n : d; }
 const POLL_MS = 1000;
 const LOG_MS = 5000;
 const BB_REFRESH_MS = 30000;
@@ -106,6 +111,12 @@ class Strategy {
       if (ob.down < MIN_ENTRY) return console.log(`   [${id} SKIP] lower touched but DOWN ${ob.down.toFixed(2)} < ${MIN_ENTRY}`);
       outcome = 'yes'; price = ob.up; side = 'UP';
     }
+    // ── Guards ──
+    const secsLeft = (contract.expTime - Date.now()) / 1000;
+    if (secsLeft < MIN_SECS_LEFT) return console.log(`   [${id} SKIP] only ${Math.round(secsLeft)}s left (< ${MIN_SECS_LEFT}s), book too thin`);
+    if (ob.up + ob.down > MAX_BOOK_SUM) return console.log(`   [${id} SKIP] bad book: UP ${ob.up.toFixed(2)} + DOWN ${ob.down.toFixed(2)} = ${(ob.up + ob.down).toFixed(2)} > ${MAX_BOOK_SUM}`);
+    if (!(price > 0) || price > MAX_BUY_PX) return console.log(`   [${id} SKIP] ${side} price ${price.toFixed(2)} > max ${MAX_BUY_PX} (only the ~10c side is allowed)`);
+
     console.log(`\n   🔥 [${id}] ${band} band → buy ${side} @ ~${price.toFixed(2)} (UP=${ob.up.toFixed(2)} DOWN=${ob.down.toFixed(2)})`);
 
     // Normally a no-op: float is already in trading. Fallback tops up the shortfall.
@@ -127,6 +138,8 @@ class Strategy {
       if (st?.code === '0' && od?.state === 'filled') fill = parseFloat(od.avgPx || od.px || price);
       else if (od) console.log(`   ⏳ [${id}] order state: ${od.state}`);
     }
+
+    if (fill > MAX_BUY_PX) console.warn(`   ⚠️ [${id}] FILLED at ${fill.toFixed(2)} which is above max ${MAX_BUY_PX} (book moved after the check)`);
 
     const sell = await this.okx.sellLimit(contract.instId, outcome, SIZE, SELL_PX);
     let sellId = null;
@@ -160,9 +173,15 @@ class Strategy {
         if (r?.code === '0' && od?.state === 'filled') {
           const px = parseFloat(od.avgPx || SELL_PX);
           const profit = (px - t.buyPrice) * t.sz;
-          this.record(id, true, profit);
-          console.log(`\n   🎉 [${id}] WIN ${t.side} sold @ ${px.toFixed(2)} (bought ${t.buyPrice.toFixed(2)}) profit=${profit.toFixed(4)}`);
-          await this.alerts.win({ ...base, sellPrice: px, profit, winrate: this.winrate(), wins: this.wins, losses: this.losses, settled: false });
+          const won = profit > 0;
+          this.record(id, won, profit);
+          if (won) {
+            console.log(`\n   🎉 [${id}] WIN ${t.side} sold @ ${px.toFixed(2)} (bought ${t.buyPrice.toFixed(2)}) profit=${profit.toFixed(4)}`);
+            await this.alerts.win({ ...base, sellPrice: px, profit, winrate: this.winrate(), wins: this.wins, losses: this.losses, settled: false });
+          } else {
+            console.log(`\n   💀 [${id}] LOSS ${t.side} sold @ ${px.toFixed(2)} (bought ${t.buyPrice.toFixed(2)}) loss=${profit.toFixed(4)}`);
+            await this.alerts.loss({ ...base, loss: profit, winrate: this.winrate(), wins: this.wins, losses: this.losses });
+          }
           continue;
         }
       }
